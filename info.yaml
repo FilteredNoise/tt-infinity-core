@@ -34,9 +34,9 @@ pinout:
 
   # Outputs
   uo[0]: "LED PWM Out"
-  uo[1]: "I2C SCL"
-  uo[2]: "I2C SDA"
-  uo[3]: ""
+  uo[1]: "SPI Clock (SCK)"
+  uo[2]: "SPI Data (MOSI)"
+  uo[3]: "SPI Data/Command (DC)"
   uo[4]: ""
   uo[5]: ""
   uo[6]: ""

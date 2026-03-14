@@ -33,9 +33,8 @@ module tt_um_filterednoise_infinity_core (
 
   // -- Extracting Frequencies --
   
-  // I2C Tick: Pulses high for one cycle every 128 cycles.
-  // 50 MHz / 128 = 390.625 kHz (Perfect for I2C Fast Mode!)
-  wire i2c_tick = (heartbeat[6:0] == 7'b0);
+  // SPI Clock: heartbeat[5] = ~1.5 MHz (Very safe for SPI OLEDs)
+  wire spi_clk = heartbeat[5];
 
   // PWM Ramp: An 8-bit saw-tooth wave running at 762 Hz.
   // We use bits[15:8]. 50MHz / 2^16 = ~762 Hz (Perfect for LED flicker-free PWM).
@@ -86,10 +85,11 @@ module tt_um_filterednoise_infinity_core (
   // ==========================================
   // 4. OUTPUT WIRING
   // ==========================================
-  assign uo_out[0] = pwm_out;  // LED PWM Out
-  assign uo_out[1] = 1'b0;     // I2C SCL (Placeholder for later)
-  assign uo_out[2] = 1'b0;     // I2C SDA (Placeholder for later)
-  assign uo_out[7:3] = 5'b0;   // Unused outputs
+  assign uo_out[0] = (brightness > pwm_ramp); // PWM
+  assign uo_out[1] = spi_clk;                 // SPI SCK (Placeholder)
+  assign uo_out[2] = 1'b0;                    // SPI MOSI (Placeholder)
+  assign uo_out[3] = 1'b1;                    // SPI DC (Default to Command mode)
+  assign uo_out[7:4] = 4'b0;
 
   assign uio_out = 8'b0;
   assign uio_oe  = 8'b0;
