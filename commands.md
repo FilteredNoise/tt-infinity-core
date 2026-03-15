@@ -2,7 +2,7 @@
 
 ### Source
 ```bash
-source venv/bin/activate
+source test/venv/bin/activate
 ```
 
 ### Test
