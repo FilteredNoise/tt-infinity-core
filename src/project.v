@@ -87,7 +87,7 @@ module tt_um_filterednoise_infinity_core (
           case (system_state)
               STATE_BOOT: begin
                   // Wait ~5ms for OLED internal power-on reset
-                  if (heartbeat[18]) system_state <= STATE_INIT;
+                  if (heartbeat[6]) system_state <= STATE_INIT;
               end
 
               STATE_INIT: begin

@@ -1,5 +1,6 @@
 {
   "verilog.linting.linter": "verilator",
   "verilog.formatting.verilogHDL.formatter": "verible-verilog-format",
-  "python.languageServer": "None"
+  "python.languageServer": "None",
+  "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python"
 }
