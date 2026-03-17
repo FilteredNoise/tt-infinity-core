@@ -55,8 +55,19 @@ module tt_um_filterednoise_infinity_core (
   
   // DYNAMIC DECAY: We use Encoder 2 to change which heartbeat bit triggers the decay!
   // If enc2_val is high, it uses a higher bit (slower decay).
-  // For now, we'll just map it directly to a fixed bit for testing, but we will make it dynamic later.
-  wire decay_tick = (heartbeat[19:0] == 20'b0); 
+  reg decay_tick;
+  always @(*) begin
+      case(enc2_val[7:5]) // Use the top 3 bits to give us 8 speed zones
+          3'd0: decay_tick = (heartbeat[16:0] == 17'd0); // Super Fast!
+          3'd1: decay_tick = (heartbeat[17:0] == 18'd0);
+          3'd2: decay_tick = (heartbeat[18:0] == 19'd0);
+          3'd3: decay_tick = (heartbeat[19:0] == 20'd0); // Normal (Start value)
+          3'd4: decay_tick = (heartbeat[20:0] == 21'd0);
+          3'd5: decay_tick = (heartbeat[21:0] == 22'd0);
+          3'd6: decay_tick = (heartbeat[22:0] == 23'd0);
+          3'd7: decay_tick = (heartbeat[23:0] == 24'd0); // Super Slow!
+      endcase
+  end
 
 
   // ==========================================
