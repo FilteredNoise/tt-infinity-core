@@ -250,13 +250,13 @@ module tt_um_filterednoise_infinity_core (
 
   assign uio_out = 8'b0;
   assign uio_oe  = 8'b0;
-  wire _unused = &{ena, ui_in[7:5], uio_in, 1'b0};
+  wire _unused = &{ena, ui_in[7:5], uio_in, enc2_val[4:0], 1'b0};
 
 endmodule
 
 
 // ==========================================
-// 8. QUADRATURE DECODER MODULE
+// 8. QUADRATURE DECODER MODULE (SNAPPY VERSION)
 // ==========================================
 module quad_decoder (
     input wire clk,
@@ -267,21 +267,28 @@ module quad_decoder (
 );
     reg [2:0] a_sync;
     reg [2:0] b_sync;
+    
+    // Sink unused bits for a clean linter
+    wire _unused_bits = &{a_sync[0], b_sync[2], b_sync[0], 1'b0};
 
     always @(posedge clk) begin
         if (!rst_n) begin
             a_sync <= 3'b000;
             b_sync <= 3'b000;
-            count  <= 8'd128; // Start knobs exactly in the middle!
+            count  <= 8'd128; 
         end else begin
             a_sync <= {a_sync[1:0], enc_a};
             b_sync <= {b_sync[1:0], enc_b};
 
             if (a_sync[2:1] == 2'b01) begin
                 if (b_sync[1] == 1'b0) begin
-                    if (count < 8'hFF) count <= count + 1'b1; 
+                    // Increment by 8, but stop at 255
+                    if (count <= 8'd247) count <= count + 8'd8;
+                    else                 count <= 8'd255;
                 end else begin
-                    if (count > 8'h00) count <= count - 1'b1; 
+                    // Decrement by 8, but stop at 0
+                    if (count >= 8'd8)   count <= count - 8'd8;
+                    else                 count <= 8'd0;
                 end
             end
         end
