@@ -8,9 +8,9 @@
 module tt_um_filterednoise_infinity_core (
     input  wire [7:0] ui_in,
     output wire [7:0] uo_out,
-    input  wire [7:0] uio_in,
+    input  wire[7:0] uio_in,
     output wire [7:0] uio_out,
-    output wire[7:0] uio_oe,
+    output wire [7:0] uio_oe,
     input  wire       ena,
     input  wire       clk,
     input  wire       rst_n
@@ -19,27 +19,20 @@ module tt_um_filterednoise_infinity_core (
   // ==========================================
   // 1. INPUT INTERFACE (ROTARY ENCODERS)
   // ==========================================
-  wire [7:0] enc1_val; // Max Brightness
-  wire [7:0] enc2_val; // Decay Rate
+  wire [7:0] enc1_val; // Max Brightness & Noise Density
+  wire[7:0] enc2_val; // Decay Rate
 
-  // Encoder 1 (ui_in[1] and ui_in[2])
   quad_decoder encoder1 (
-      .clk(clk),
-      .rst_n(rst_n),
-      .enc_a(ui_in[1]),
-      .enc_b(ui_in[2]),
+      .clk(clk), .rst_n(rst_n),
+      .enc_a(ui_in[1]), .enc_b(ui_in[2]),
       .count(enc1_val)
   );
 
-  // Encoder 2 (ui_in[3] and ui_in[4])
   quad_decoder encoder2 (
-      .clk(clk),
-      .rst_n(rst_n),
-      .enc_a(ui_in[3]),
-      .enc_b(ui_in[4]),
+      .clk(clk), .rst_n(rst_n),
+      .enc_a(ui_in[3]), .enc_b(ui_in[4]),
       .count(enc2_val)
   );
-
 
   // ==========================================
   // 2. SHARED HEARTBEAT COUNTER
@@ -53,22 +46,20 @@ module tt_um_filterednoise_infinity_core (
   wire spi_clk = heartbeat[5];
   wire [7:0] pwm_ramp = heartbeat[15:8];
   
-  // DYNAMIC DECAY: We use Encoder 2 to change which heartbeat bit triggers the decay!
-  // If enc2_val is high, it uses a higher bit (slower decay).
+  // DYNAMIC DECAY
   reg decay_tick;
   always @(*) begin
-      case(enc2_val[7:5]) // Use the top 3 bits to give us 8 speed zones
-          3'd0: decay_tick = (heartbeat[16:0] == 17'd0); // Super Fast!
+      case(enc2_val[7:5]) 
+          3'd0: decay_tick = (heartbeat[10:0] == 11'd0); // Fast
           3'd1: decay_tick = (heartbeat[17:0] == 18'd0);
           3'd2: decay_tick = (heartbeat[18:0] == 19'd0);
-          3'd3: decay_tick = (heartbeat[19:0] == 20'd0); // Normal (Start value)
+          3'd3: decay_tick = (heartbeat[19:0] == 20'd0); 
           3'd4: decay_tick = (heartbeat[20:0] == 21'd0);
           3'd5: decay_tick = (heartbeat[21:0] == 22'd0);
           3'd6: decay_tick = (heartbeat[22:0] == 23'd0);
-          3'd7: decay_tick = (heartbeat[23:0] == 24'd0); // Super Slow!
+          3'd7: decay_tick = (heartbeat[23:0] == 24'd0); // Slow
       endcase
   end
-
 
   // ==========================================
   // 3. AUDIO TRIGGER EDGE DETECTION & DECAY
@@ -85,22 +76,51 @@ module tt_um_filterednoise_infinity_core (
       end else begin
           audio_trig_prev <= audio_trig;
           
-          // DYNAMIC BRIGHTNESS: Jump to Encoder 1's value instead of hardcoded FF!
           if (audio_hit) brightness <= enc1_val; 
           else if (decay_tick && brightness > 8'd0) brightness <= brightness - 1'b1; 
       end
   end
 
   // ==========================================
-  // 4. MASTER STATE MACHINE & INIT ROM
+  // 4. LFSR NOISE & PROBABILITY ENGINE
   // ==========================================
-  localparam STATE_BOOT = 2'd0;
-  localparam STATE_INIT = 2'd1;
-  localparam STATE_RUN  = 2'd2;
+  reg[31:0] lfsr;
+  always @(posedge clk) begin
+      if (!rst_n) begin
+          lfsr <= 32'hACE1ACE1; // Must be non-zero seed
+      end else begin
+          // Standard Galois LFSR polynomial taps
+          lfsr <= {lfsr[30:0], lfsr[31] ^ lfsr[21] ^ lfsr[1] ^ lfsr[0]};
+      end
+  end
+
+  wire[7:0] noise_byte;
+  // If random number is less than brightness, pixel is ON (1). Else OFF (0).
+  assign noise_byte[0] = (lfsr[7:0]   < brightness);
+  assign noise_byte[1] = (lfsr[15:8]  < brightness);
+  assign noise_byte[2] = (lfsr[23:16] < brightness);
+  assign noise_byte[3] = (lfsr[31:24] < brightness);
+  assign noise_byte[4] = ({lfsr[3:0],   lfsr[31:28]} < brightness);
+  assign noise_byte[5] = ({lfsr[11:8],  lfsr[7:4]}   < brightness);
+  assign noise_byte[6] = ({lfsr[19:16], lfsr[15:12]} < brightness);
+  assign noise_byte[7] = ({lfsr[27:24], lfsr[23:20]} < brightness);
+
+  // ==========================================
+  // 5. MASTER STATE MACHINE & FRAME CONTROLLER
+  // ==========================================
+  localparam STATE_BOOT       = 2'd0;
+  localparam STATE_INIT       = 2'd1;
+  localparam STATE_WAIT_FRAME = 2'd2;
+  localparam STATE_DRAW_FRAME = 2'd3;
 
   reg [1:0] system_state;
-  reg [2:0] init_index;
+  reg[2:0] init_index;
   reg [7:0] init_cmd;
+  reg[9:0] pixel_cnt;
+  reg       last_frame_tick;
+
+  // heartbeat[21] flips every ~83 milliseconds = ~12 Frames Per Second
+  wire frame_tick = heartbeat[21];
 
   always @(*) begin
       case(init_index)
@@ -119,36 +139,58 @@ module tt_um_filterednoise_infinity_core (
 
   always @(posedge clk) begin
       if (!rst_n) begin
-          system_state <= STATE_BOOT;
-          init_index   <= 3'd0;
-          send_trigger <= 1'b0;
-          dc_val       <= 1'b0;
+          system_state    <= STATE_BOOT;
+          init_index      <= 3'd0;
+          send_trigger    <= 1'b0;
+          dc_val          <= 1'b0;
+          pixel_cnt       <= 10'd0;
+          last_frame_tick <= 1'b0;
       end else begin
-          send_trigger <= 1'b0; 
+          send_trigger    <= 1'b0; 
+          last_frame_tick <= frame_tick; // Edge detection for frame rate
 
           case (system_state)
               STATE_BOOT: begin
-                  if (heartbeat[6]) system_state <= STATE_INIT; // Fast boot for simulation
+                  // Wait ~5ms for hardware OLED stabilization
+                  // NOTE: Change to heartbeat[6] to speed up simulation!
+                  if (heartbeat[18]) system_state <= STATE_INIT; 
               end
 
               STATE_INIT: begin
                   if (!spi_busy && !send_trigger) begin
                       if (init_index < 4) begin
-                          dc_val       <= 1'b0; 
+                          dc_val       <= 1'b0; // Command Mode
                           data_to_send <= init_cmd;
                           send_trigger <= 1'b1;
                           init_index   <= init_index + 1'b1;
                       end else begin
-                          system_state <= STATE_RUN;
+                          system_state <= STATE_WAIT_FRAME;
                       end
                   end
               end
 
-              STATE_RUN: begin
+              STATE_WAIT_FRAME: begin
+                  // EXIT WAIT IF: 
+                  // 1. The 12 FPS timer ticks (Normal scrolling)
+                  // 2. An audio beat hits (Immediate reaction!)
+                  if ((frame_tick && !last_frame_tick) || audio_hit) begin
+                      pixel_cnt    <= 10'd0;
+                      system_state <= STATE_DRAW_FRAME;
+                  end
+              end
+
+              STATE_DRAW_FRAME: begin
+                  // Blast 1024 bytes (128x64 pixels) as fast as SPI allows
                   if (!spi_busy && !send_trigger) begin
-                      dc_val       <= 1'b1; 
-                      data_to_send <= (brightness > 128) ? 8'hFF : heartbeat[12:5]; 
+                      dc_val       <= 1'b1; // Data Mode
+                      data_to_send <= noise_byte;
                       send_trigger <= 1'b1;
+                      
+                      if (pixel_cnt == 10'd1023) begin
+                          system_state <= STATE_WAIT_FRAME; // Frame done, wait for next tick
+                      end else begin
+                          pixel_cnt <= pixel_cnt + 1'b1;
+                      end
                   end
               end
               
@@ -158,15 +200,15 @@ module tt_um_filterednoise_infinity_core (
   end
 
   // ==========================================
-  // 5. SPI SHIFT REGISTER (TX ENGINE)
+  // 6. SPI SHIFT REGISTER (TX ENGINE)
   // ==========================================
   reg [7:0] shift_reg;
   reg [3:0] bit_cnt;
   reg       spi_busy_reg;
   reg       spi_dc_reg;
 
-  wire spi_fall = (heartbeat[5:0] == 6'b100000); 
-  wire spi_rise = (heartbeat[5:0] == 6'b000000);
+  wire spi_fall = (heartbeat[5:0] == 6'b000000); 
+  wire spi_rise = (heartbeat[5:0] == 6'b100000);
   
   assign spi_busy = spi_busy_reg;
 
@@ -198,7 +240,7 @@ module tt_um_filterednoise_infinity_core (
   wire spi_mosi = shift_reg[7];
 
   // ==========================================
-  // 6. OUTPUT WIRING
+  // 7. OUTPUT WIRING
   // ==========================================
   assign uo_out[0] = (brightness > pwm_ramp); 
   assign uo_out[1] = spi_clk;                 
@@ -214,7 +256,7 @@ endmodule
 
 
 // ==========================================
-// 7. NEW MODULE: QUADRATURE DECODER
+// 8. QUADRATURE DECODER MODULE
 // ==========================================
 module quad_decoder (
     input wire clk,
@@ -223,7 +265,6 @@ module quad_decoder (
     input wire enc_b,
     output reg [7:0] count
 );
-    // 3-bit shift registers for synchronization and edge detection
     reg [2:0] a_sync;
     reg [2:0] b_sync;
 
@@ -233,19 +274,14 @@ module quad_decoder (
             b_sync <= 3'b000;
             count  <= 8'd128; // Start knobs exactly in the middle!
         end else begin
-            // Shift new values in from the right (synchronizing them)
             a_sync <= {a_sync[1:0], enc_a};
             b_sync <= {b_sync[1:0], enc_b};
 
-            // Detect a RISING edge on Pin A (went from 0 to 1)
             if (a_sync[2:1] == 2'b01) begin
-                // If B is low, we are turning Clockwise
                 if (b_sync[1] == 1'b0) begin
-                    if (count < 8'hFF) count <= count + 1'b1; // Prevent overflowing past 255
-                end 
-                // If B is high, we are turning Counter-Clockwise
-                else begin
-                    if (count > 8'h00) count <= count - 1'b1; // Prevent underflowing past 0
+                    if (count < 8'hFF) count <= count + 1'b1; 
+                end else begin
+                    if (count > 8'h00) count <= count - 1'b1; 
                 end
             end
         end
