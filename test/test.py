@@ -3,6 +3,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles
 
 
+# Safely set a single bit in the 8-bit input array
 def set_pin(dut, pin_idx, val):
     current = int(dut.ui_in.value) if dut.ui_in.value.is_resolvable else 0
     if val:
@@ -11,6 +12,7 @@ def set_pin(dut, pin_idx, val):
         dut.ui_in.value = current & ~(1 << pin_idx)
 
 
+# Helper function to simulate a human turning the knob
 async def turn_encoder(dut, pin_a_idx, pin_b_idx, direction="CW", clicks=1):
     for _ in range(clicks):
         if direction == "CW":
@@ -34,34 +36,50 @@ async def turn_encoder(dut, pin_a_idx, pin_b_idx, direction="CW", clicks=1):
 
 
 @cocotb.test()
-async def test_infinity_core_interrupt(dut):
-    dut._log.info("Starting Audio Interrupt Test")
+async def test_infinity_core_master(dut):
+    dut._log.info("Starting Infinity Core Master Validation Test")
 
+    # Start 50MHz Clock
     clock = Clock(dut.clk, 20, units="ns")
     cocotb.start_soon(clock.start())
 
+    # 1. Power On & Reset
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 50)
 
-    dut._log.info("1. Setting Brightness/Decay...")
-    await turn_encoder(dut, 1, 2, direction="CW", clicks=20)  # High brightness
-    await turn_encoder(dut, 3, 4, direction="CCW", clicks=128)  # Super Fast decay
+    # 2. The Boot & Init Sequence
+    dut._log.info("Waiting for hardware boot sequence (~5.24 ms)...")
+    # 270,000 cycles safely covers the 5.24ms boot + SPI Init transmission
+    await ClockCycles(dut.clk, 270000)
+    dut._log.info("Boot complete. OLED should now be initialized.")
 
-    dut._log.info("2. Waiting 15ms for OLED to boot and idle...")
-    await ClockCycles(dut.clk, 750000)  # 15ms wait
+    # 3. Turning the Knobs
+    dut._log.info("Twisting Encoder 1 CW (Increasing Max Brightness/Density)...")
+    await turn_encoder(dut, 1, 2, direction="CW", clicks=10)  # 128 + (10 * 8) = 208
 
-    dut._log.info("3. BASS DROP! Firing audio trigger...")
-    set_pin(dut, 0, 1)  # audio_trig goes HIGH
+    dut._log.info("Twisting Encoder 2 CCW (Setting Decay to Fastest)...")
+    await turn_encoder(dut, 3, 4, direction="CCW", clicks=20)  # Drops to 0 (Fastest)
+
+    # Give it a short pause before the music hits
+    await ClockCycles(dut.clk, 50000)
+
+    # 4. The Audio Trigger
+    dut._log.info("BOOM! Firing Audio Trigger.")
+    set_pin(dut, 0, 1)  # Hit!
     await ClockCycles(dut.clk, 10)
-    set_pin(dut, 0, 0)  # audio_trig goes LOW
+    set_pin(dut, 0, 0)  # Release
 
-    dut._log.info("4. Watching the instant reaction...")
-    # Wait 5ms (250,000 cycles) to watch it blast the SPI data and start decaying
-    await ClockCycles(dut.clk, 250000)
+    # 5. Frame Draw & Decay Observation
+    dut._log.info("Audio hit registered. SPI should be blasting noise_byte.")
+    dut._log.info("Simulating for another 45 ms (2.25 million cycles)...")
+    dut._log.info("This takes a moment. Please wait...")
 
-    dut._log.info("Simulation complete!")
+    # 2.25M cycles gives enough time to see the frame finish drawing,
+    # the brightness decay significantly, AND the next natural frame tick!
+    await ClockCycles(dut.clk, 2250000)
+
+    dut._log.info("Simulation complete! Go check GTKWave.")
