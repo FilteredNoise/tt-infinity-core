@@ -10,7 +10,7 @@ module tt_um_filterednoise_infinity_core (
     output wire [7:0] uo_out,
     input  wire[7:0] uio_in,
     output wire [7:0] uio_out,
-    output wire [7:0] uio_oe,
+    output wire[7:0] uio_oe,
     input  wire       ena,
     input  wire       clk,
     input  wire       rst_n
@@ -20,7 +20,7 @@ module tt_um_filterednoise_infinity_core (
   // 1. INPUT INTERFACE (ROTARY ENCODERS)
   // ==========================================
   wire [7:0] enc1_val; // Max Brightness & Noise Density
-  wire[7:0] enc2_val; // Decay Rate
+  wire [7:0] enc2_val; // Decay Rate
 
   quad_decoder encoder1 (
       .clk(clk), .rst_n(rst_n),
@@ -43,14 +43,13 @@ module tt_um_filterednoise_infinity_core (
       else        heartbeat <= heartbeat + 1'b1;
   end
 
-  wire spi_clk = heartbeat[5];
-  wire [7:0] pwm_ramp = heartbeat[15:8];
+  wire[7:0] pwm_ramp = heartbeat[15:8];
   
   // DYNAMIC DECAY
   reg decay_tick;
   always @(*) begin
       case(enc2_val[7:5]) 
-          3'd0: decay_tick = (heartbeat[10:0] == 11'd0); // Fast
+          3'd0: decay_tick = (heartbeat[16:0] == 17'd0); // Super Fast (Real-world value)
           3'd1: decay_tick = (heartbeat[17:0] == 18'd0);
           3'd2: decay_tick = (heartbeat[18:0] == 19'd0);
           3'd3: decay_tick = (heartbeat[19:0] == 20'd0); 
@@ -114,9 +113,9 @@ module tt_um_filterednoise_infinity_core (
   localparam STATE_DRAW_FRAME = 2'd3;
 
   reg [1:0] system_state;
-  reg[2:0] init_index;
+  reg [2:0] init_index;
   reg [7:0] init_cmd;
-  reg[9:0] pixel_cnt;
+  reg [9:0] pixel_cnt;
   reg       last_frame_tick;
 
   // heartbeat[21] flips every ~83 milliseconds = ~12 Frames Per Second
@@ -135,6 +134,7 @@ module tt_um_filterednoise_infinity_core (
   reg       send_trigger;
   reg [7:0] data_to_send;
   reg       dc_val;
+  reg       cs_val; // Chip Select Register
   wire      spi_busy; 
 
   always @(posedge clk) begin
@@ -143,51 +143,51 @@ module tt_um_filterednoise_infinity_core (
           init_index      <= 3'd0;
           send_trigger    <= 1'b0;
           dc_val          <= 1'b0;
+          cs_val          <= 1'b1; // CS is Active LOW, default to HIGH (deselected)
           pixel_cnt       <= 10'd0;
           last_frame_tick <= 1'b0;
       end else begin
           send_trigger    <= 1'b0; 
-          last_frame_tick <= frame_tick; // Edge detection for frame rate
+          last_frame_tick <= frame_tick;
 
           case (system_state)
               STATE_BOOT: begin
                   // Wait ~5ms for hardware OLED stabilization
-                  // NOTE: Change to heartbeat[6] to speed up simulation!
                   if (heartbeat[18]) system_state <= STATE_INIT; 
               end
 
               STATE_INIT: begin
                   if (!spi_busy && !send_trigger) begin
                       if (init_index < 4) begin
+                          cs_val       <= 1'b0; // Select Display
                           dc_val       <= 1'b0; // Command Mode
                           data_to_send <= init_cmd;
                           send_trigger <= 1'b1;
                           init_index   <= init_index + 1'b1;
                       end else begin
+                          cs_val       <= 1'b1; // Deselect Display
                           system_state <= STATE_WAIT_FRAME;
                       end
                   end
               end
 
               STATE_WAIT_FRAME: begin
-                  // EXIT WAIT IF: 
-                  // 1. The 12 FPS timer ticks (Normal scrolling)
-                  // 2. An audio beat hits (Immediate reaction!)
                   if ((frame_tick && !last_frame_tick) || audio_hit) begin
                       pixel_cnt    <= 10'd0;
+                      cs_val       <= 1'b0; // Select Display for upcoming frame
                       system_state <= STATE_DRAW_FRAME;
                   end
               end
 
               STATE_DRAW_FRAME: begin
-                  // Blast 1024 bytes (128x64 pixels) as fast as SPI allows
                   if (!spi_busy && !send_trigger) begin
                       dc_val       <= 1'b1; // Data Mode
                       data_to_send <= noise_byte;
                       send_trigger <= 1'b1;
                       
                       if (pixel_cnt == 10'd1023) begin
-                          system_state <= STATE_WAIT_FRAME; // Frame done, wait for next tick
+                          cs_val       <= 1'b1; // Deselect Display (Frame Complete)
+                          system_state <= STATE_WAIT_FRAME; 
                       end else begin
                           pixel_cnt <= pixel_cnt + 1'b1;
                       end
@@ -200,16 +200,15 @@ module tt_um_filterednoise_infinity_core (
   end
 
   // ==========================================
-  // 6. SPI SHIFT REGISTER (TX ENGINE)
+  // 6. GATED SPI SHIFT REGISTER (TX ENGINE)
   // ==========================================
   reg [7:0] shift_reg;
   reg [3:0] bit_cnt;
   reg       spi_busy_reg;
   reg       spi_dc_reg;
+  reg [5:0] spi_div;      // Generates internal SPI clock
+  reg       spi_clk_out;  // The actual gated clock pin
 
-  wire spi_fall = (heartbeat[5:0] == 6'b000000); 
-  wire spi_rise = (heartbeat[5:0] == 6'b100000);
-  
   assign spi_busy = spi_busy_reg;
 
   always @(posedge clk) begin
@@ -218,8 +217,12 @@ module tt_um_filterednoise_infinity_core (
           bit_cnt      <= 4'd0;
           spi_busy_reg <= 1'b0;
           spi_dc_reg   <= 1'b1;
+          spi_div      <= 6'd0;
+          spi_clk_out  <= 1'b0;
       end else begin
           if (!spi_busy_reg) begin
+              spi_clk_out <= 1'b0; // Ensure clock is flat LOW when idle
+              spi_div     <= 6'd0;
               if (send_trigger) begin
                   shift_reg    <= data_to_send;
                   spi_dc_reg   <= dc_val; 
@@ -227,11 +230,21 @@ module tt_um_filterednoise_infinity_core (
                   spi_busy_reg <= 1'b1; 
               end
           end else begin
-              if (spi_fall && bit_cnt > 0) begin
-                  shift_reg <= {shift_reg[6:0], 1'b0}; 
-                  bit_cnt   <= bit_cnt - 1'b1;
-              end else if (spi_rise && bit_cnt == 0) begin
-                  spi_busy_reg <= 1'b0;
+              spi_div <= spi_div + 1'b1;
+              
+              // Rising Edge: Display reads the bit
+              if (spi_div == 6'd31) begin
+                  spi_clk_out <= 1'b1;
+              end 
+              // Falling Edge: We load the next bit onto the wire
+              else if (spi_div == 6'd63) begin
+                  spi_clk_out <= 1'b0;
+                  shift_reg   <= {shift_reg[6:0], 1'b0}; 
+                  bit_cnt     <= bit_cnt - 1'b1;
+                  
+                  if (bit_cnt == 4'd1) begin
+                      spi_busy_reg <= 1'b0; // End transmission after 8th bit
+                  end
               end
           end
       end
@@ -243,10 +256,11 @@ module tt_um_filterednoise_infinity_core (
   // 7. OUTPUT WIRING
   // ==========================================
   assign uo_out[0] = (brightness > pwm_ramp); 
-  assign uo_out[1] = spi_clk;                 
+  assign uo_out[1] = spi_clk_out;             // Gated SPI Clock
   assign uo_out[2] = spi_mosi;                
   assign uo_out[3] = spi_dc_reg;              
-  assign uo_out[7:4] = 4'b0;
+  assign uo_out[4] = cs_val;                  // Active LOW Chip Select
+  assign uo_out[7:5] = 3'b0;
 
   assign uio_out = 8'b0;
   assign uio_oe  = 8'b0;
@@ -275,7 +289,7 @@ module quad_decoder (
         if (!rst_n) begin
             a_sync <= 3'b000;
             b_sync <= 3'b000;
-            count  <= 8'd128; 
+            count  <= 8'd128; // Start knobs exactly in the middle!
         end else begin
             a_sync <= {a_sync[1:0], enc_a};
             b_sync <= {b_sync[1:0], enc_b};
