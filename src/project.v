@@ -260,7 +260,8 @@ module tt_um_filterednoise_infinity_core (
   assign uo_out[2] = spi_mosi;                
   assign uo_out[3] = spi_dc_reg;              
   assign uo_out[4] = cs_val;                  // Active LOW Chip Select
-  assign uo_out[7:5] = 3'b0;
+  assign uo_out[5] = heartbeat[23];
+  assign uo_out[7:6] = 2'b0;
 
   assign uio_out = 8'b0;
   assign uio_oe  = 8'b0;
