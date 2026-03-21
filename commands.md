@@ -46,10 +46,3 @@ cd fpga
 openFPGALoader -b tangnano9k -f pack.fs
 cd ..
 ```
-
-### Clear flash if needed
-```bash
-cd fpga
-openFPGALoader -b tangnano9k -f pack.fs
-cd ..
-```
